@@ -80,11 +80,6 @@
         .btn:hover {
             background: rgba(255, 255, 255, 0.3);
             border-color: rgba(255, 255, 255, 0.5);
-            transform: scale(1.05);
-        }
-
-        .btn:active {
-            transform: scale(0.95);
         }
 
         .btn:disabled {
@@ -277,20 +272,19 @@
                 this.isReplaying = false;
                 this.animationFrame = null;
                 
-                // Ball detection parameters
+                // Detection parameters
                 this.minBallSize = 10;
                 this.maxBallSize = 35;
-                this.brightnessThreshold = 200; // Higher threshold to reduce false positives
-                this.scanStep = 10; // Larger step for better performance
+                this.brightnessThreshold = 200;
+                this.scanStep = 10;
                 
-                // Tracking states
-                this.ballDetected = false;
+                // Reactive tracking states
                 this.ballOnTee = false;
-                this.trackingActive = false; // Only true after ball starts moving
+                this.trackingActive = false;
                 this.initialBallPosition = null;
-                this.motionThreshold = 30; // Pixels ball must move before tracking starts
-                this.stableFrames = 0; // Frames ball has been stable
-                this.stableThreshold = 10; // Frames needed to confirm ball on tee
+                this.stableFrames = 0;
+                this.stableThreshold = 8; // Frames ball must be stable
+                this.motionThreshold = 25; // Pixels ball must move to start tracking
                 
                 // Tracking data
                 this.ballPositions = [];
@@ -388,17 +382,7 @@
                 if (this.isTracking) {
                     btn.textContent = 'Stop Tracking';
                     btn.classList.add('tracking');
-                    this.startTime = Date.now();
-                    this.ballPositions = [];
-                    this.trail = [];
-                    this.frameCount = 0;
-                    this.lastDetectionTime = 0;
-                    this.ballDetected = false;
-                    this.ballOnTee = false;
-                    this.trackingActive = false;
-                    this.initialBallPosition = null;
-                    this.stableFrames = 0;
-                    document.getElementById('readyIndicator').classList.remove('show');
+                    this.resetTracking();
                     this.track();
                 } else {
                     btn.textContent = 'Start Tracking';
@@ -410,6 +394,20 @@
                         this.animationFrame = null;
                     }
                 }
+            }
+            
+            resetTracking() {
+                this.ballPositions = [];
+                this.trail = [];
+                this.frameCount = 0;
+                this.startTime = Date.now();
+                this.lastDetectionTime = 0;
+                this.ballOnTee = false;
+                this.trackingActive = false;
+                this.initialBallPosition = null;
+                this.stableFrames = 0;
+                this.stats = { speed: 0, distance: 0, height: 0, direction: 0 };
+                document.getElementById('readyIndicator').classList.remove('show');
             }
             
             toggleRecording() {
@@ -439,14 +437,14 @@
                 const width = this.canvas.width;
                 const height = this.canvas.height;
                 
-                // Clear and draw video frame (mirrored for natural view)
+                // Draw video frame (mirrored for live view)
                 this.ctx.save();
                 this.ctx.translate(width, 0);
                 this.ctx.scale(-1, 1);
                 this.ctx.drawImage(this.video, 0, 0, width, height);
                 this.ctx.restore();
                 
-                // Get current frame data for detection (non-mirrored)
+                // Get frame for detection (non-mirrored)
                 const tempCanvas = document.createElement('canvas');
                 tempCanvas.width = width;
                 tempCanvas.height = height;
@@ -454,34 +452,31 @@
                 tempCtx.drawImage(this.video, 0, 0, width, height);
                 const currentFrame = tempCtx.getImageData(0, 0, width, height);
                 
-                // Detect ball (throttle detection for performance)
+                // Detect ball (throttled)
                 const now = Date.now();
                 let ball = null;
-                if (now - this.lastDetectionTime > 33) { // ~30fps detection for better accuracy
+                if (now - this.lastDetectionTime > 33) {
                     ball = this.detectBall(currentFrame);
                     this.lastDetectionTime = now;
                 }
                 
+                // Reactive tracking logic
                 if (ball) {
-                    // Mirror X coordinate for display
                     const mirroredX = width - ball.x;
                     const currentPos = { x: mirroredX, y: ball.y };
                     
-                    // Check if ball is stable (on tee) or moving (hit)
                     if (!this.initialBallPosition) {
-                        // First detection - set initial position
+                        // First detection
                         this.initialBallPosition = currentPos;
                         this.stableFrames = 1;
-                        this.ballDetected = true;
                     } else {
-                        // Check distance from initial position
                         const distance = Math.sqrt(
                             Math.pow(currentPos.x - this.initialBallPosition.x, 2) +
                             Math.pow(currentPos.y - this.initialBallPosition.y, 2)
                         );
                         
-                        if (distance < 15) {
-                            // Ball is still near initial position (on tee)
+                        if (distance < this.motionThreshold) {
+                            // Ball is stable (on tee)
                             this.stableFrames++;
                             if (this.stableFrames >= this.stableThreshold) {
                                 this.ballOnTee = true;
@@ -489,9 +484,9 @@
                                 document.getElementById('readyIndicator').classList.add('show');
                             }
                         } else {
-                            // Ball has moved significantly (hit!)
+                            // Ball moved (hit!)
                             if (!this.trackingActive && this.ballOnTee) {
-                                // Just started moving - begin tracking
+                                // Start tracking
                                 this.trackingActive = true;
                                 this.ballPositions = [];
                                 this.trail = [];
@@ -500,45 +495,32 @@
                             }
                             
                             if (this.trackingActive) {
-                                // Update initial position for motion tracking
-                                this.initialBallPosition = currentPos;
-                                
-                                // Add to tracking
+                                // Track the ball
                                 this.ballPositions.push({
                                     x: mirroredX,
                                     y: ball.y,
                                     size: ball.size,
-                                    time: Date.now() - (this.startTime || Date.now())
+                                    time: Date.now() - this.startTime
                                 });
                                 
-                                // Update trail
                                 this.trail.push({ x: mirroredX, y: ball.y, time: Date.now() });
                                 
-                                // Keep trail limited
                                 if (this.trail.length > 100) {
                                     this.trail.shift();
                                 }
                                 
-                                // Calculate stats
                                 this.calculateStats();
                                 
-                                // Record frame if recording (store positions only - more efficient)
+                                // Record if recording
                                 if (this.isRecording) {
-                                    // Store non-mirrored coordinates for replay
-                                    const nonMirroredTrail = this.trail.map(point => ({
-                                        x: width - point.x, // Un-mirror X coordinate
-                                        y: point.y,
-                                        time: point.time
+                                    const nonMirroredTrail = this.trail.map(p => ({
+                                        x: width - p.x,
+                                        y: p.y,
+                                        time: p.time
                                     }));
                                     
-                                    // Store non-mirrored ball position
-                                    const nonMirroredBall = {
-                                        x: ball.x, // Already non-mirrored from detection
-                                        y: ball.y
-                                    };
-                                    
                                     this.recordedFrames.push({
-                                        ball: nonMirroredBall,
+                                        ball: { x: ball.x, y: ball.y },
                                         trail: nonMirroredTrail,
                                         stats: { ...this.stats },
                                         timestamp: Date.now()
@@ -549,7 +531,6 @@
                     }
                 } else {
                     // No ball detected
-                    this.ballDetected = false;
                     this.stableFrames = 0;
                     if (!this.trackingActive) {
                         this.ballOnTee = false;
@@ -558,12 +539,11 @@
                     }
                 }
                 
-                // Only draw trail and ball if actively tracking
+                // Draw visuals
                 if (this.trackingActive && this.trail.length > 0) {
                     this.drawTrail();
                 }
                 
-                // Draw ball position only if tracking or ready
                 if (ball && (this.trackingActive || this.ballOnTee)) {
                     const mirroredX = width - ball.x;
                     this.drawBall({ x: mirroredX, y: ball.y, size: ball.size });
@@ -578,28 +558,23 @@
                 const width = frameData.width;
                 const height = frameData.height;
                 
-                // Focus search area - lower 2/3 of screen (where tee would be)
+                // Focus on lower 2/3 of screen (where tee would be)
                 const searchStartY = height * 0.33;
                 const searchEndY = height;
-                const searchWidth = width * 0.8; // Center 80% of width
                 const searchStartX = width * 0.1;
                 const searchEndX = width * 0.9;
                 
                 const candidates = [];
                 
-                // Scan with larger step for performance and accuracy
                 for (let y = searchStartY; y < searchEndY; y += this.scanStep) {
                     for (let x = searchStartX; x < searchEndX; x += this.scanStep) {
                         const idx = (y * width + x) * 4;
                         const r = data[idx];
                         const g = data[idx + 1];
                         const b = data[idx + 2];
-                        
                         const brightness = (r + g + b) / 3;
                         
-                        // Higher threshold to reduce false positives
                         if (brightness > this.brightnessThreshold && r > 180 && g > 180 && b > 180) {
-                            // Check if this is a circular bright spot (ball-like)
                             let size = 0;
                             let totalBrightness = 0;
                             let count = 0;
@@ -625,7 +600,6 @@
                                             size++;
                                             totalBrightness += nBrightness;
                                             count++;
-                                            // Check circularity - prefer round shapes
                                             if (dist < checkRadius * 0.7) {
                                                 circularity++;
                                             }
@@ -634,14 +608,13 @@
                                 }
                             }
                             
-                            // More strict size and circularity requirements
                             const avgBrightness = totalBrightness / count;
                             const circularityRatio = circularity / size;
                             
                             if (size >= this.minBallSize && 
                                 size <= this.maxBallSize && 
                                 avgBrightness > this.brightnessThreshold &&
-                                circularityRatio > 0.4) { // Must be somewhat circular
+                                circularityRatio > 0.4) {
                                 candidates.push({
                                     x, y,
                                     size,
@@ -655,7 +628,7 @@
                 
                 if (candidates.length === 0) return null;
                 
-                // If we have a previous position, prefer candidates near it
+                // Prefer candidates near last known position
                 if (this.initialBallPosition) {
                     const lastX = width - this.initialBallPosition.x;
                     let bestCandidate = null;
@@ -667,7 +640,6 @@
                             Math.pow(candidate.y - this.initialBallPosition.y, 2)
                         );
                         
-                        // Allow larger search radius if tracking is active
                         const maxDistance = this.trackingActive ? 200 : 100;
                         
                         if (distance < minDistance && distance < maxDistance) {
@@ -679,7 +651,7 @@
                     if (bestCandidate) return bestCandidate;
                 }
                 
-                // Return best candidate (brightest and most circular)
+                // Return best candidate
                 candidates.sort((a, b) => {
                     const scoreA = a.brightness * a.circularity;
                     const scoreB = b.brightness * b.circularity;
@@ -702,7 +674,6 @@
                 this.ctx.lineWidth = 4;
                 this.ctx.lineCap = 'round';
                 this.ctx.lineJoin = 'round';
-                
                 this.ctx.beginPath();
                 
                 for (let i = 0; i < this.trail.length; i++) {
@@ -716,7 +687,6 @@
                 
                 this.ctx.stroke();
                 
-                // Draw glow effect
                 this.ctx.shadowBlur = 20;
                 this.ctx.shadowColor = '#3498db';
                 this.ctx.stroke();
@@ -727,11 +697,9 @@
                 this.ctx.fillStyle = '#fff';
                 this.ctx.shadowBlur = 15;
                 this.ctx.shadowColor = '#3498db';
-                
                 this.ctx.beginPath();
                 this.ctx.arc(ball.x, ball.y, Math.max(ball.size / 2, 8), 0, Math.PI * 2);
                 this.ctx.fill();
-                
                 this.ctx.shadowBlur = 0;
             }
             
@@ -824,10 +792,10 @@
                     
                     const frame = this.recordedFrames[frameIndex];
                     
-                    // Draw live video frame (non-mirrored for replay - matches camera movement)
+                    // Draw live video (non-mirrored for replay)
                     this.ctx.drawImage(this.video, 0, 0, width, height);
                     
-                    // Draw trail (coordinates are already non-mirrored from recording)
+                    // Draw trail
                     if (frame.trail && frame.trail.length >= 2) {
                         const gradient = this.ctx.createLinearGradient(0, 0, width, height);
                         gradient.addColorStop(0, '#ff6b6b');
@@ -852,14 +820,13 @@
                         
                         this.ctx.stroke();
                         
-                        // Draw glow effect
                         this.ctx.shadowBlur = 20;
                         this.ctx.shadowColor = '#3498db';
                         this.ctx.stroke();
                         this.ctx.shadowBlur = 0;
                     }
                     
-                    // Draw ball (coordinates are already non-mirrored from recording)
+                    // Draw ball
                     if (frame.ball) {
                         this.ctx.fillStyle = '#fff';
                         this.ctx.shadowBlur = 15;
@@ -880,7 +847,7 @@
                     }
                     
                     frameIndex++;
-                    this.replayInterval = setTimeout(playFrame, 50); // 20fps replay
+                    this.replayInterval = setTimeout(playFrame, 50);
                 };
                 
                 playFrame();
@@ -900,7 +867,6 @@
                 this.trail = [];
                 this.recordedFrames = [];
                 this.stats = { speed: 0, distance: 0, height: 0, direction: 0 };
-                this.ballDetected = false;
                 this.ballOnTee = false;
                 this.trackingActive = false;
                 this.initialBallPosition = null;
