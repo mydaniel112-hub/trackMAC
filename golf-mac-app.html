@@ -40,7 +40,6 @@
             width: 100%;
             height: 100%;
             object-fit: cover;
-            transform: scaleX(-1);
         }
 
         #canvas {
@@ -86,6 +85,11 @@
 
         .btn:active {
             transform: scale(0.95);
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
         }
 
         .btn.recording {
@@ -185,14 +189,6 @@
         #error.show {
             display: block;
         }
-
-        .trail-point {
-            position: absolute;
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            pointer-events: none;
-        }
     </style>
 </head>
 <body>
@@ -247,13 +243,14 @@
                 this.stream = null;
                 this.isTracking = false;
                 this.isRecording = false;
+                this.isReplaying = false;
                 this.animationFrame = null;
                 
                 // Ball detection parameters
-                this.minBallSize = 5;
-                this.maxBallSize = 50;
-                this.motionThreshold = 20;
-                this.brightnessThreshold = 200;
+                this.minBallSize = 8;
+                this.maxBallSize = 40;
+                this.brightnessThreshold = 180;
+                this.scanStep = 8; // Optimize: scan every 8 pixels instead of 4
                 
                 // Tracking data
                 this.ballPositions = [];
@@ -261,6 +258,7 @@
                 this.lastFrame = null;
                 this.frameCount = 0;
                 this.startTime = null;
+                this.lastDetectionTime = 0;
                 
                 // Stats
                 this.stats = {
@@ -272,6 +270,7 @@
                 
                 // Replay data
                 this.recordedFrames = [];
+                this.replayInterval = null;
                 
                 this.setupEventListeners();
                 this.setupCanvas();
@@ -287,11 +286,17 @@
             
             setupCanvas() {
                 const resizeCanvas = () => {
-                    this.canvas.width = this.video.videoWidth || window.innerWidth;
-                    this.canvas.height = this.video.videoHeight || window.innerHeight;
+                    if (this.video.videoWidth && this.video.videoHeight) {
+                        this.canvas.width = this.video.videoWidth;
+                        this.canvas.height = this.video.videoHeight;
+                    } else {
+                        this.canvas.width = window.innerWidth;
+                        this.canvas.height = window.innerHeight;
+                    }
                 };
                 
                 resizeCanvas();
+                this.video.addEventListener('loadedmetadata', resizeCanvas);
                 window.addEventListener('resize', resizeCanvas);
             }
             
@@ -303,9 +308,9 @@
                     const constraints = {
                         video: {
                             facingMode: 'environment',
-                            width: { ideal: 3840 },
-                            height: { ideal: 2160 },
-                            frameRate: { ideal: 120 }
+                            width: { ideal: 1920 },
+                            height: { ideal: 1080 },
+                            frameRate: { ideal: 60, max: 60 }
                         }
                     };
                     
@@ -324,6 +329,7 @@
                     document.getElementById('startBtn').disabled = true;
                     document.getElementById('trackBtn').disabled = false;
                     document.getElementById('recordBtn').disabled = false;
+                    document.getElementById('clearBtn').disabled = false;
                     
                 } catch (error) {
                     this.showError('Camera access denied or not available. Please enable camera permissions.');
@@ -332,6 +338,10 @@
             }
             
             toggleTracking() {
+                if (this.isReplaying) {
+                    this.stopReplay();
+                }
+                
                 this.isTracking = !this.isTracking;
                 const btn = document.getElementById('trackBtn');
                 
@@ -342,12 +352,14 @@
                     this.ballPositions = [];
                     this.trail = [];
                     this.frameCount = 0;
+                    this.lastDetectionTime = 0;
                     this.track();
                 } else {
                     btn.textContent = 'Start Tracking';
                     btn.classList.remove('tracking');
                     if (this.animationFrame) {
                         cancelAnimationFrame(this.animationFrame);
+                        this.animationFrame = null;
                     }
                 }
             }
@@ -363,7 +375,9 @@
                 } else {
                     btn.textContent = 'Record';
                     btn.classList.remove('recording');
-                    document.getElementById('replayBtn').disabled = false;
+                    if (this.recordedFrames.length > 0) {
+                        document.getElementById('replayBtn').disabled = false;
+                    }
                 }
             }
             
@@ -377,31 +391,49 @@
                 const width = this.canvas.width;
                 const height = this.canvas.height;
                 
-                // Draw current video frame
+                // Clear and draw video frame (mirrored for natural view)
                 this.ctx.save();
+                this.ctx.translate(width, 0);
                 this.ctx.scale(-1, 1);
-                this.ctx.drawImage(this.video, -width, 0, width, height);
+                this.ctx.drawImage(this.video, 0, 0, width, height);
                 this.ctx.restore();
                 
-                // Get current frame data
-                const currentFrame = this.ctx.getImageData(0, 0, width, height);
+                // Get current frame data for detection (non-mirrored)
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = width;
+                tempCanvas.height = height;
+                const tempCtx = tempCanvas.getContext('2d');
+                tempCtx.drawImage(this.video, 0, 0, width, height);
+                const currentFrame = tempCtx.getImageData(0, 0, width, height);
                 
-                // Detect ball
-                const ball = this.detectBall(currentFrame);
+                // Detect ball (throttle detection for performance)
+                const now = Date.now();
+                let ball = null;
+                if (now - this.lastDetectionTime > 16) { // ~60fps detection
+                    ball = this.detectBall(currentFrame);
+                    this.lastDetectionTime = now;
+                } else if (this.ballPositions.length > 0) {
+                    // Use last known position for smooth rendering
+                    const lastPos = this.ballPositions[this.ballPositions.length - 1];
+                    ball = { x: lastPos.x, y: lastPos.y, size: lastPos.size || 15 };
+                }
                 
                 if (ball) {
+                    // Mirror X coordinate for display
+                    const mirroredX = width - ball.x;
+                    
                     this.ballPositions.push({
-                        x: ball.x,
+                        x: mirroredX,
                         y: ball.y,
                         size: ball.size,
                         time: Date.now() - (this.startTime || Date.now())
                     });
                     
                     // Update trail
-                    this.trail.push({ x: ball.x, y: ball.y, time: Date.now() });
+                    this.trail.push({ x: mirroredX, y: ball.y, time: Date.now() });
                     
                     // Keep trail limited
-                    if (this.trail.length > 100) {
+                    if (this.trail.length > 80) {
                         this.trail.shift();
                     }
                     
@@ -411,10 +443,10 @@
                     // Record frame if recording
                     if (this.isRecording) {
                         this.recordedFrames.push({
-                            ball: { x: ball.x, y: ball.y },
+                            ball: { x: mirroredX, y: ball.y },
                             trail: [...this.trail],
                             stats: { ...this.stats },
-                            frame: this.ctx.getImageData(0, 0, width, height)
+                            timestamp: Date.now()
                         });
                     }
                 }
@@ -424,11 +456,9 @@
                 
                 // Draw current ball position
                 if (ball) {
-                    this.drawBall(ball);
+                    const mirroredX = width - ball.x;
+                    this.drawBall({ x: mirroredX, y: ball.y, size: ball.size });
                 }
-                
-                // Draw stats
-                this.drawStats();
                 
                 this.lastFrame = currentFrame;
                 this.frameCount++;
@@ -439,29 +469,33 @@
                 const width = frameData.width;
                 const height = frameData.height;
                 
-                // Brightness-based detection
+                // Optimized brightness-based detection
                 const candidates = [];
+                const searchRadius = Math.min(width, height) * 0.1; // Focus on center area
+                const centerX = width / 2;
+                const centerY = height / 2;
                 
-                for (let y = 0; y < height; y += 4) {
-                    for (let x = 0; x < width; x += 4) {
+                // Scan with larger step for performance
+                for (let y = Math.max(0, centerY - searchRadius); y < Math.min(height, centerY + searchRadius); y += this.scanStep) {
+                    for (let x = Math.max(0, centerX - searchRadius); x < Math.min(width, centerX + searchRadius); x += this.scanStep) {
                         const idx = (y * width + x) * 4;
                         const r = data[idx];
                         const g = data[idx + 1];
                         const b = data[idx + 2];
                         
-                        // Calculate brightness
                         const brightness = (r + g + b) / 3;
                         
                         if (brightness > this.brightnessThreshold) {
-                            // Check if this is a bright spot (potential ball)
+                            // Quick size check
                             let size = 0;
                             let totalBrightness = 0;
                             let count = 0;
                             
-                            for (let dy = -this.maxBallSize; dy <= this.maxBallSize; dy++) {
-                                for (let dx = -this.maxBallSize; dx <= this.maxBallSize; dx++) {
+                            const checkRadius = Math.min(this.maxBallSize, 20);
+                            for (let dy = -checkRadius; dy <= checkRadius; dy += 2) {
+                                for (let dx = -checkRadius; dx <= checkRadius; dx += 2) {
                                     const dist = Math.sqrt(dx * dx + dy * dy);
-                                    if (dist > this.maxBallSize) continue;
+                                    if (dist > checkRadius) continue;
                                     
                                     const nx = x + dx;
                                     const ny = y + dy;
@@ -495,19 +529,20 @@
                 
                 if (candidates.length === 0) return null;
                 
-                // Motion tracking - prefer candidates that moved from last frame
-                if (this.lastFrame && this.ballPositions.length > 0) {
+                // Motion tracking - prefer candidates near last position
+                if (this.ballPositions.length > 0) {
                     const lastPos = this.ballPositions[this.ballPositions.length - 1];
+                    const lastX = width - lastPos.x; // Un-mirror for comparison
                     let bestCandidate = null;
                     let minDistance = Infinity;
                     
                     for (const candidate of candidates) {
                         const distance = Math.sqrt(
-                            Math.pow(candidate.x - lastPos.x, 2) +
+                            Math.pow(candidate.x - lastX, 2) +
                             Math.pow(candidate.y - lastPos.y, 2)
                         );
                         
-                        if (distance < minDistance && distance < 100) {
+                        if (distance < minDistance && distance < 150) {
                             minDistance = distance;
                             bestCandidate = candidate;
                         }
@@ -539,8 +574,6 @@
                 
                 for (let i = 0; i < this.trail.length; i++) {
                     const point = this.trail[i];
-                    const alpha = i / this.trail.length;
-                    
                     if (i === 0) {
                         this.ctx.moveTo(point.x, point.y);
                     } else {
@@ -558,13 +591,12 @@
             }
             
             drawBall(ball) {
-                // Draw ball with glow
                 this.ctx.fillStyle = '#fff';
                 this.ctx.shadowBlur = 15;
                 this.ctx.shadowColor = '#3498db';
                 
                 this.ctx.beginPath();
-                this.ctx.arc(ball.x, ball.y, ball.size / 2, 0, Math.PI * 2);
+                this.ctx.arc(ball.x, ball.y, Math.max(ball.size / 2, 8), 0, Math.PI * 2);
                 this.ctx.fill();
                 
                 this.ctx.shadowBlur = 0;
@@ -574,27 +606,26 @@
                 if (this.ballPositions.length < 2) return;
                 
                 const positions = this.ballPositions;
-                const recent = positions.slice(-10);
+                const recent = positions.slice(-5);
                 
                 if (recent.length < 2) return;
                 
-                // Calculate speed (pixels per frame to mph conversion)
                 const last = recent[recent.length - 1];
                 const prev = recent[recent.length - 2];
                 
                 const dx = last.x - prev.x;
                 const dy = last.y - prev.y;
                 const distance = Math.sqrt(dx * dx + dy * dy);
-                const timeDelta = (last.time - prev.time) / 1000; // seconds
+                const timeDelta = (last.time - prev.time) / 1000;
                 
-                // Rough conversion (adjust based on camera calibration)
-                const pixelsPerYard = 50; // Approximate
+                if (timeDelta <= 0) return;
+                
+                const pixelsPerYard = 50;
                 const yardsPerSecond = (distance / pixelsPerYard) / timeDelta;
-                const mph = yardsPerSecond * 2.045; // Convert to mph
+                const mph = yardsPerSecond * 2.045;
                 
-                this.stats.speed = Math.round(mph);
+                this.stats.speed = Math.max(0, Math.round(mph));
                 
-                // Calculate total distance
                 let totalDistance = 0;
                 for (let i = 1; i < positions.length; i++) {
                     const p1 = positions[i - 1];
@@ -608,15 +639,13 @@
                 
                 this.stats.distance = Math.round(totalDistance);
                 
-                // Calculate max height (apex)
                 const minY = Math.min(...positions.map(p => p.y));
                 const maxY = Math.max(...positions.map(p => p.y));
-                const heightPixels = maxY - minY;
-                const heightFeet = (heightPixels / pixelsPerYard) * 3; // Convert to feet
+                const heightPixels = Math.abs(maxY - minY);
+                const heightFeet = (heightPixels / pixelsPerYard) * 3;
                 
                 this.stats.height = Math.round(heightFeet);
                 
-                // Calculate direction (angle)
                 if (positions.length >= 2) {
                     const first = positions[0];
                     const last = positions[positions.length - 1];
@@ -624,7 +653,6 @@
                     this.stats.direction = Math.round(angle);
                 }
                 
-                // Update UI
                 document.getElementById('speed').textContent = this.stats.speed;
                 document.getElementById('distance').textContent = this.stats.distance;
                 document.getElementById('height').textContent = this.stats.height;
@@ -633,58 +661,103 @@
                 document.getElementById('stats').classList.add('show');
             }
             
-            drawStats() {
-                // Stats are displayed in the UI, not on canvas
-            }
-            
             replay() {
-                if (this.recordedFrames.length === 0) return;
+                if (this.recordedFrames.length === 0) {
+                    this.showError('No recording to replay. Record a shot first.');
+                    return;
+                }
                 
+                if (this.isReplaying) {
+                    this.stopReplay();
+                    return;
+                }
+                
+                this.isReplaying = true;
                 this.isTracking = false;
                 document.getElementById('trackBtn').textContent = 'Start Tracking';
                 document.getElementById('trackBtn').classList.remove('tracking');
+                document.getElementById('replayBtn').textContent = 'Stop Replay';
                 
                 let frameIndex = 0;
+                const width = this.canvas.width;
+                const height = this.canvas.height;
                 
                 const playFrame = () => {
+                    if (!this.isReplaying) return;
+                    
                     if (frameIndex >= this.recordedFrames.length) {
-                        frameIndex = 0; // Loop
+                        frameIndex = 0;
                     }
                     
                     const frame = this.recordedFrames[frameIndex];
                     
-                    // Draw recorded frame
-                    this.ctx.putImageData(frame.frame, 0, 0);
+                    // Draw video frame (mirrored)
+                    this.ctx.save();
+                    this.ctx.translate(width, 0);
+                    this.ctx.scale(-1, 1);
+                    this.ctx.drawImage(this.video, 0, 0, width, height);
+                    this.ctx.restore();
                     
                     // Draw trail
-                    this.ctx.strokeStyle = '#3498db';
-                    this.ctx.lineWidth = 4;
-                    this.ctx.beginPath();
-                    
-                    for (let i = 0; i < frame.trail.length; i++) {
-                        const point = frame.trail[i];
-                        if (i === 0) {
-                            this.ctx.moveTo(point.x, point.y);
-                        } else {
-                            this.ctx.lineTo(point.x, point.y);
+                    if (frame.trail && frame.trail.length >= 2) {
+                        const gradient = this.ctx.createLinearGradient(0, 0, width, height);
+                        gradient.addColorStop(0, '#ff6b6b');
+                        gradient.addColorStop(0.3, '#f39c12');
+                        gradient.addColorStop(0.6, '#2ecc71');
+                        gradient.addColorStop(1, '#3498db');
+                        
+                        this.ctx.strokeStyle = gradient;
+                        this.ctx.lineWidth = 4;
+                        this.ctx.lineCap = 'round';
+                        this.ctx.lineJoin = 'round';
+                        this.ctx.beginPath();
+                        
+                        for (let i = 0; i < frame.trail.length; i++) {
+                            const point = frame.trail[i];
+                            if (i === 0) {
+                                this.ctx.moveTo(point.x, point.y);
+                            } else {
+                                this.ctx.lineTo(point.x, point.y);
+                            }
                         }
+                        
+                        this.ctx.stroke();
                     }
-                    
-                    this.ctx.stroke();
                     
                     // Draw ball
                     if (frame.ball) {
                         this.ctx.fillStyle = '#fff';
+                        this.ctx.shadowBlur = 15;
+                        this.ctx.shadowColor = '#3498db';
                         this.ctx.beginPath();
-                        this.ctx.arc(frame.ball.x, frame.ball.y, 10, 0, Math.PI * 2);
+                        this.ctx.arc(frame.ball.x, frame.ball.y, 12, 0, Math.PI * 2);
                         this.ctx.fill();
+                        this.ctx.shadowBlur = 0;
+                    }
+                    
+                    // Update stats
+                    if (frame.stats) {
+                        document.getElementById('speed').textContent = frame.stats.speed || 0;
+                        document.getElementById('distance').textContent = frame.stats.distance || 0;
+                        document.getElementById('height').textContent = frame.stats.height || 0;
+                        document.getElementById('direction').textContent = frame.stats.direction || 0;
+                        document.getElementById('stats').classList.add('show');
                     }
                     
                     frameIndex++;
-                    setTimeout(playFrame, 33); // ~30fps replay
+                    this.replayInterval = setTimeout(playFrame, 50); // 20fps replay
                 };
                 
                 playFrame();
+            }
+            
+            stopReplay() {
+                this.isReplaying = false;
+                if (this.replayInterval) {
+                    clearTimeout(this.replayInterval);
+                    this.replayInterval = null;
+                }
+                document.getElementById('replayBtn').textContent = 'Replay';
             }
             
             clear() {
@@ -700,8 +773,18 @@
                 
                 document.getElementById('stats').classList.remove('show');
                 document.getElementById('replayBtn').disabled = true;
+                document.getElementById('replayBtn').textContent = 'Replay';
                 
-                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                this.stopReplay();
+                
+                // Clear canvas
+                const width = this.canvas.width;
+                const height = this.canvas.height;
+                this.ctx.save();
+                this.ctx.translate(width, 0);
+                this.ctx.scale(-1, 1);
+                this.ctx.drawImage(this.video, 0, 0, width, height);
+                this.ctx.restore();
             }
             
             showError(message) {
