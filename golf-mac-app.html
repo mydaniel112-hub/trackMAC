@@ -522,17 +522,9 @@
                                 // Calculate stats
                                 this.calculateStats();
                                 
-                                // Record frame if recording (store non-mirrored for replay)
+                                // Record frame if recording (store positions only - more efficient)
                                 if (this.isRecording) {
-                                    // Create non-mirrored video frame for recording
-                                    const recordCanvas = document.createElement('canvas');
-                                    recordCanvas.width = width;
-                                    recordCanvas.height = height;
-                                    const recordCtx = recordCanvas.getContext('2d');
-                                    recordCtx.drawImage(this.video, 0, 0, width, height);
-                                    const nonMirroredFrame = recordCtx.getImageData(0, 0, width, height);
-                                    
-                                    // Store non-mirrored coordinates - un-mirror the trail
+                                    // Store non-mirrored coordinates for replay
                                     const nonMirroredTrail = this.trail.map(point => ({
                                         x: width - point.x, // Un-mirror X coordinate
                                         y: point.y,
@@ -549,7 +541,6 @@
                                         ball: nonMirroredBall,
                                         trail: nonMirroredTrail,
                                         stats: { ...this.stats },
-                                        frame: nonMirroredFrame, // Store non-mirrored frame
                                         timestamp: Date.now()
                                     });
                                 }
@@ -833,13 +824,8 @@
                     
                     const frame = this.recordedFrames[frameIndex];
                     
-                    // Draw video frame (non-mirrored for replay - matches camera movement)
-                    if (frame.frame) {
-                        this.ctx.putImageData(frame.frame, 0, 0);
-                    } else {
-                        // Fallback: draw non-mirrored video
-                        this.ctx.drawImage(this.video, 0, 0, width, height);
-                    }
+                    // Draw live video frame (non-mirrored for replay - matches camera movement)
+                    this.ctx.drawImage(this.video, 0, 0, width, height);
                     
                     // Draw trail (coordinates are already non-mirrored from recording)
                     if (frame.trail && frame.trail.length >= 2) {
