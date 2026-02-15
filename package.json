@@ -1,0 +1,23 @@
+{
+  "name": "golfmac-ball-tracker",
+  "version": "1.0.0",
+  "description": "Advanced golf ball tracking app with TrackMan and ShotTracer inspired technology",
+  "main": "index.html",
+  "scripts": {
+    "dev": "serve .",
+    "build": "echo 'No build required - static HTML'",
+    "start": "serve ."
+  },
+  "keywords": [
+    "golf",
+    "ball-tracking",
+    "trackman",
+    "shottracer",
+    "computer-vision"
+  ],
+  "author": "GolfMac",
+  "license": "MIT",
+  "devDependencies": {
+    "serve": "^14.2.1"
+  }
+}

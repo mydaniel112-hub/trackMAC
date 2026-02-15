@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>GolfMac - Ball Tracker</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #0a0a0a;
+            color: #fff;
+            overflow: hidden;
+            position: fixed;
+            width: 100%;
+            height: 100%;
+        }
+
+        #container {
+            position: relative;
+            width: 100%;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        #videoContainer {
+            position: relative;
+            flex: 1;
+            overflow: hidden;
+            background: #000;
+        }
+
+        #video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+        }
+
+        #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+
+        #controls {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            right: 20px;
+            z-index: 10;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            background: rgba(255, 255, 255, 0.2);
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 25px;
+            color: #fff;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            backdrop-filter: blur(10px);
+            transition: all 0.3s;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .btn:hover {
+            background: rgba(255, 255, 255, 0.3);
+            border-color: rgba(255, 255, 255, 0.5);
+            transform: scale(1.05);
+        }
+
+        .btn:active {
+            transform: scale(0.95);
+        }
+
+        .btn.recording {
+            background: rgba(255, 0, 0, 0.7);
+            border-color: #ff0000;
+            animation: pulse 1.5s infinite;
+        }
+
+        .btn.tracking {
+            background: rgba(0, 255, 0, 0.7);
+            border-color: #00ff00;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        #stats {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(20px);
+            border-radius: 15px;
+            padding: 20px;
+            display: none;
+            z-index: 10;
+        }
+
+        #stats.show {
+            display: block;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 15px;
+        }
+
+        .stat-item {
+            text-align: center;
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: #aaa;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 5px;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: 700;
+            color: #fff;
+        }
+
+        .stat-unit {
+            font-size: 14px;
+            color: #888;
+            margin-left: 3px;
+        }
+
+        #status {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            z-index: 5;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 30px 50px;
+            border-radius: 15px;
+            backdrop-filter: blur(20px);
+        }
+
+        #status.hidden {
+            display: none;
+        }
+
+        #error {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            z-index: 20;
+            background: rgba(255, 0, 0, 0.9);
+            padding: 20px 40px;
+            border-radius: 10px;
+            color: #fff;
+            display: none;
+        }
+
+        #error.show {
+            display: block;
+        }
+
+        .trail-point {
+            position: absolute;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="videoContainer">
+            <video id="video" autoplay playsinline></video>
+            <canvas id="canvas"></canvas>
+        </div>
+
+        <div id="controls">
+            <button class="btn" id="startBtn">Start Camera</button>
+            <button class="btn" id="trackBtn" disabled>Start Tracking</button>
+            <button class="btn" id="recordBtn" disabled>Record</button>
+            <button class="btn" id="replayBtn" disabled>Replay</button>
+            <button class="btn" id="clearBtn" disabled>Clear</button>
+        </div>
+
+        <div id="status" class="hidden">
+            <p>Initializing camera...</p>
+        </div>
+
+        <div id="error"></div>
+
+        <div id="stats">
+            <div class="stats-grid">
+                <div class="stat-item">
+                    <div class="stat-label">Speed</div>
+                    <div class="stat-value"><span id="speed">0</span><span class="stat-unit">mph</span></div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Distance</div>
+                    <div class="stat-value"><span id="distance">0</span><span class="stat-unit">yds</span></div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Height</div>
+                    <div class="stat-value"><span id="height">0</span><span class="stat-unit">ft</span></div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Direction</div>
+                    <div class="stat-value"><span id="direction">0</span><span class="stat-unit">°</span></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class GolfBallTracker {
+            constructor() {
+                this.video = document.getElementById('video');
+                this.canvas = document.getElementById('canvas');
+                this.ctx = this.canvas.getContext('2d');
+                this.stream = null;
+                this.isTracking = false;
+                this.isRecording = false;
+                this.animationFrame = null;
+                
+                // Ball detection parameters
+                this.minBallSize = 5;
+                this.maxBallSize = 50;
+                this.motionThreshold = 20;
+                this.brightnessThreshold = 200;
+                
+                // Tracking data
+                this.ballPositions = [];
+                this.trail = [];
+                this.lastFrame = null;
+                this.frameCount = 0;
+                this.startTime = null;
+                
+                // Stats
+                this.stats = {
+                    speed: 0,
+                    distance: 0,
+                    height: 0,
+                    direction: 0
+                };
+                
+                // Replay data
+                this.recordedFrames = [];
+                
+                this.setupEventListeners();
+                this.setupCanvas();
+            }
+            
+            setupEventListeners() {
+                document.getElementById('startBtn').addEventListener('click', () => this.startCamera());
+                document.getElementById('trackBtn').addEventListener('click', () => this.toggleTracking());
+                document.getElementById('recordBtn').addEventListener('click', () => this.toggleRecording());
+                document.getElementById('replayBtn').addEventListener('click', () => this.replay());
+                document.getElementById('clearBtn').addEventListener('click', () => this.clear());
+            }
+            
+            setupCanvas() {
+                const resizeCanvas = () => {
+                    this.canvas.width = this.video.videoWidth || window.innerWidth;
+                    this.canvas.height = this.video.videoHeight || window.innerHeight;
+                };
+                
+                resizeCanvas();
+                window.addEventListener('resize', resizeCanvas);
+            }
+            
+            async startCamera() {
+                try {
+                    document.getElementById('status').classList.remove('hidden');
+                    document.getElementById('status').textContent = 'Requesting camera access...';
+                    
+                    const constraints = {
+                        video: {
+                            facingMode: 'environment',
+                            width: { ideal: 3840 },
+                            height: { ideal: 2160 },
+                            frameRate: { ideal: 120 }
+                        }
+                    };
+                    
+                    this.stream = await navigator.mediaDevices.getUserMedia(constraints);
+                    this.video.srcObject = this.stream;
+                    
+                    await new Promise((resolve) => {
+                        this.video.onloadedmetadata = () => {
+                            this.video.play();
+                            this.setupCanvas();
+                            resolve();
+                        };
+                    });
+                    
+                    document.getElementById('status').classList.add('hidden');
+                    document.getElementById('startBtn').disabled = true;
+                    document.getElementById('trackBtn').disabled = false;
+                    document.getElementById('recordBtn').disabled = false;
+                    
+                } catch (error) {
+                    this.showError('Camera access denied or not available. Please enable camera permissions.');
+                    console.error('Camera error:', error);
+                }
+            }
+            
+            toggleTracking() {
+                this.isTracking = !this.isTracking;
+                const btn = document.getElementById('trackBtn');
+                
+                if (this.isTracking) {
+                    btn.textContent = 'Stop Tracking';
+                    btn.classList.add('tracking');
+                    this.startTime = Date.now();
+                    this.ballPositions = [];
+                    this.trail = [];
+                    this.frameCount = 0;
+                    this.track();
+                } else {
+                    btn.textContent = 'Start Tracking';
+                    btn.classList.remove('tracking');
+                    if (this.animationFrame) {
+                        cancelAnimationFrame(this.animationFrame);
+                    }
+                }
+            }
+            
+            toggleRecording() {
+                this.isRecording = !this.isRecording;
+                const btn = document.getElementById('recordBtn');
+                
+                if (this.isRecording) {
+                    btn.textContent = 'Stop Recording';
+                    btn.classList.add('recording');
+                    this.recordedFrames = [];
+                } else {
+                    btn.textContent = 'Record';
+                    btn.classList.remove('recording');
+                    document.getElementById('replayBtn').disabled = false;
+                }
+            }
+            
+            track() {
+                if (!this.isTracking) return;
+                
+                this.animationFrame = requestAnimationFrame(() => this.track());
+                
+                if (this.video.readyState !== this.video.HAVE_ENOUGH_DATA) return;
+                
+                const width = this.canvas.width;
+                const height = this.canvas.height;
+                
+                // Draw current video frame
+                this.ctx.save();
+                this.ctx.scale(-1, 1);
+                this.ctx.drawImage(this.video, -width, 0, width, height);
+                this.ctx.restore();
+                
+                // Get current frame data
+                const currentFrame = this.ctx.getImageData(0, 0, width, height);
+                
+                // Detect ball
+                const ball = this.detectBall(currentFrame);
+                
+                if (ball) {
+                    this.ballPositions.push({
+                        x: ball.x,
+                        y: ball.y,
+                        size: ball.size,
+                        time: Date.now() - (this.startTime || Date.now())
+                    });
+                    
+                    // Update trail
+                    this.trail.push({ x: ball.x, y: ball.y, time: Date.now() });
+                    
+                    // Keep trail limited
+                    if (this.trail.length > 100) {
+                        this.trail.shift();
+                    }
+                    
+                    // Calculate stats
+                    this.calculateStats();
+                    
+                    // Record frame if recording
+                    if (this.isRecording) {
+                        this.recordedFrames.push({
+                            ball: { x: ball.x, y: ball.y },
+                            trail: [...this.trail],
+                            stats: { ...this.stats },
+                            frame: this.ctx.getImageData(0, 0, width, height)
+                        });
+                    }
+                }
+                
+                // Draw trail
+                this.drawTrail();
+                
+                // Draw current ball position
+                if (ball) {
+                    this.drawBall(ball);
+                }
+                
+                // Draw stats
+                this.drawStats();
+                
+                this.lastFrame = currentFrame;
+                this.frameCount++;
+            }
+            
+            detectBall(frameData) {
+                const data = frameData.data;
+                const width = frameData.width;
+                const height = frameData.height;
+                
+                // Brightness-based detection
+                const candidates = [];
+                
+                for (let y = 0; y < height; y += 4) {
+                    for (let x = 0; x < width; x += 4) {
+                        const idx = (y * width + x) * 4;
+                        const r = data[idx];
+                        const g = data[idx + 1];
+                        const b = data[idx + 2];
+                        
+                        // Calculate brightness
+                        const brightness = (r + g + b) / 3;
+                        
+                        if (brightness > this.brightnessThreshold) {
+                            // Check if this is a bright spot (potential ball)
+                            let size = 0;
+                            let totalBrightness = 0;
+                            let count = 0;
+                            
+                            for (let dy = -this.maxBallSize; dy <= this.maxBallSize; dy++) {
+                                for (let dx = -this.maxBallSize; dx <= this.maxBallSize; dx++) {
+                                    const dist = Math.sqrt(dx * dx + dy * dy);
+                                    if (dist > this.maxBallSize) continue;
+                                    
+                                    const nx = x + dx;
+                                    const ny = y + dy;
+                                    
+                                    if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                                        const nIdx = (ny * width + nx) * 4;
+                                        const nr = data[nIdx];
+                                        const ng = data[nIdx + 1];
+                                        const nb = data[nIdx + 2];
+                                        const nBrightness = (nr + ng + nb) / 3;
+                                        
+                                        if (nBrightness > this.brightnessThreshold) {
+                                            size++;
+                                            totalBrightness += nBrightness;
+                                            count++;
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            if (size >= this.minBallSize && size <= this.maxBallSize) {
+                                candidates.push({
+                                    x, y,
+                                    size,
+                                    brightness: totalBrightness / count
+                                });
+                            }
+                        }
+                    }
+                }
+                
+                if (candidates.length === 0) return null;
+                
+                // Motion tracking - prefer candidates that moved from last frame
+                if (this.lastFrame && this.ballPositions.length > 0) {
+                    const lastPos = this.ballPositions[this.ballPositions.length - 1];
+                    let bestCandidate = null;
+                    let minDistance = Infinity;
+                    
+                    for (const candidate of candidates) {
+                        const distance = Math.sqrt(
+                            Math.pow(candidate.x - lastPos.x, 2) +
+                            Math.pow(candidate.y - lastPos.y, 2)
+                        );
+                        
+                        if (distance < minDistance && distance < 100) {
+                            minDistance = distance;
+                            bestCandidate = candidate;
+                        }
+                    }
+                    
+                    if (bestCandidate) return bestCandidate;
+                }
+                
+                // Return brightest candidate
+                candidates.sort((a, b) => b.brightness - a.brightness);
+                return candidates[0];
+            }
+            
+            drawTrail() {
+                if (this.trail.length < 2) return;
+                
+                const gradient = this.ctx.createLinearGradient(0, 0, this.canvas.width, this.canvas.height);
+                gradient.addColorStop(0, '#ff6b6b');
+                gradient.addColorStop(0.3, '#f39c12');
+                gradient.addColorStop(0.6, '#2ecc71');
+                gradient.addColorStop(1, '#3498db');
+                
+                this.ctx.strokeStyle = gradient;
+                this.ctx.lineWidth = 4;
+                this.ctx.lineCap = 'round';
+                this.ctx.lineJoin = 'round';
+                
+                this.ctx.beginPath();
+                
+                for (let i = 0; i < this.trail.length; i++) {
+                    const point = this.trail[i];
+                    const alpha = i / this.trail.length;
+                    
+                    if (i === 0) {
+                        this.ctx.moveTo(point.x, point.y);
+                    } else {
+                        this.ctx.lineTo(point.x, point.y);
+                    }
+                }
+                
+                this.ctx.stroke();
+                
+                // Draw glow effect
+                this.ctx.shadowBlur = 20;
+                this.ctx.shadowColor = '#3498db';
+                this.ctx.stroke();
+                this.ctx.shadowBlur = 0;
+            }
+            
+            drawBall(ball) {
+                // Draw ball with glow
+                this.ctx.fillStyle = '#fff';
+                this.ctx.shadowBlur = 15;
+                this.ctx.shadowColor = '#3498db';
+                
+                this.ctx.beginPath();
+                this.ctx.arc(ball.x, ball.y, ball.size / 2, 0, Math.PI * 2);
+                this.ctx.fill();
+                
+                this.ctx.shadowBlur = 0;
+            }
+            
+            calculateStats() {
+                if (this.ballPositions.length < 2) return;
+                
+                const positions = this.ballPositions;
+                const recent = positions.slice(-10);
+                
+                if (recent.length < 2) return;
+                
+                // Calculate speed (pixels per frame to mph conversion)
+                const last = recent[recent.length - 1];
+                const prev = recent[recent.length - 2];
+                
+                const dx = last.x - prev.x;
+                const dy = last.y - prev.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                const timeDelta = (last.time - prev.time) / 1000; // seconds
+                
+                // Rough conversion (adjust based on camera calibration)
+                const pixelsPerYard = 50; // Approximate
+                const yardsPerSecond = (distance / pixelsPerYard) / timeDelta;
+                const mph = yardsPerSecond * 2.045; // Convert to mph
+                
+                this.stats.speed = Math.round(mph);
+                
+                // Calculate total distance
+                let totalDistance = 0;
+                for (let i = 1; i < positions.length; i++) {
+                    const p1 = positions[i - 1];
+                    const p2 = positions[i];
+                    const dist = Math.sqrt(
+                        Math.pow(p2.x - p1.x, 2) +
+                        Math.pow(p2.y - p1.y, 2)
+                    );
+                    totalDistance += dist / pixelsPerYard;
+                }
+                
+                this.stats.distance = Math.round(totalDistance);
+                
+                // Calculate max height (apex)
+                const minY = Math.min(...positions.map(p => p.y));
+                const maxY = Math.max(...positions.map(p => p.y));
+                const heightPixels = maxY - minY;
+                const heightFeet = (heightPixels / pixelsPerYard) * 3; // Convert to feet
+                
+                this.stats.height = Math.round(heightFeet);
+                
+                // Calculate direction (angle)
+                if (positions.length >= 2) {
+                    const first = positions[0];
+                    const last = positions[positions.length - 1];
+                    const angle = Math.atan2(last.y - first.y, last.x - first.x) * (180 / Math.PI);
+                    this.stats.direction = Math.round(angle);
+                }
+                
+                // Update UI
+                document.getElementById('speed').textContent = this.stats.speed;
+                document.getElementById('distance').textContent = this.stats.distance;
+                document.getElementById('height').textContent = this.stats.height;
+                document.getElementById('direction').textContent = this.stats.direction;
+                
+                document.getElementById('stats').classList.add('show');
+            }
+            
+            drawStats() {
+                // Stats are displayed in the UI, not on canvas
+            }
+            
+            replay() {
+                if (this.recordedFrames.length === 0) return;
+                
+                this.isTracking = false;
+                document.getElementById('trackBtn').textContent = 'Start Tracking';
+                document.getElementById('trackBtn').classList.remove('tracking');
+                
+                let frameIndex = 0;
+                
+                const playFrame = () => {
+                    if (frameIndex >= this.recordedFrames.length) {
+                        frameIndex = 0; // Loop
+                    }
+                    
+                    const frame = this.recordedFrames[frameIndex];
+                    
+                    // Draw recorded frame
+                    this.ctx.putImageData(frame.frame, 0, 0);
+                    
+                    // Draw trail
+                    this.ctx.strokeStyle = '#3498db';
+                    this.ctx.lineWidth = 4;
+                    this.ctx.beginPath();
+                    
+                    for (let i = 0; i < frame.trail.length; i++) {
+                        const point = frame.trail[i];
+                        if (i === 0) {
+                            this.ctx.moveTo(point.x, point.y);
+                        } else {
+                            this.ctx.lineTo(point.x, point.y);
+                        }
+                    }
+                    
+                    this.ctx.stroke();
+                    
+                    // Draw ball
+                    if (frame.ball) {
+                        this.ctx.fillStyle = '#fff';
+                        this.ctx.beginPath();
+                        this.ctx.arc(frame.ball.x, frame.ball.y, 10, 0, Math.PI * 2);
+                        this.ctx.fill();
+                    }
+                    
+                    frameIndex++;
+                    setTimeout(playFrame, 33); // ~30fps replay
+                };
+                
+                playFrame();
+            }
+            
+            clear() {
+                this.ballPositions = [];
+                this.trail = [];
+                this.recordedFrames = [];
+                this.stats = { speed: 0, distance: 0, height: 0, direction: 0 };
+                
+                document.getElementById('speed').textContent = '0';
+                document.getElementById('distance').textContent = '0';
+                document.getElementById('height').textContent = '0';
+                document.getElementById('direction').textContent = '0';
+                
+                document.getElementById('stats').classList.remove('show');
+                document.getElementById('replayBtn').disabled = true;
+                
+                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+            }
+            
+            showError(message) {
+                const errorDiv = document.getElementById('error');
+                errorDiv.textContent = message;
+                errorDiv.classList.add('show');
+                
+                setTimeout(() => {
+                    errorDiv.classList.remove('show');
+                }, 5000);
+            }
+        }
+        
+        // Initialize app
+        window.addEventListener('DOMContentLoaded', () => {
+            const tracker = new GolfBallTracker();
+        });
+    </script>
+</body>
+</html>
