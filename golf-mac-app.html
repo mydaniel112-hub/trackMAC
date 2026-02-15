@@ -272,11 +272,11 @@
                 this.isReplaying = false;
                 this.animationFrame = null;
                 
-                // Detection parameters
+                // Detection parameters (optimized for course use)
                 this.minBallSize = 10;
                 this.maxBallSize = 35;
                 this.brightnessThreshold = 200;
-                this.scanStep = 10;
+                this.scanStep = 12; // Larger step for better performance
                 
                 // Reactive tracking states
                 this.ballOnTee = false;
@@ -342,9 +342,9 @@
                     const constraints = {
                         video: {
                             facingMode: 'environment',
-                            width: { ideal: 1920 },
-                            height: { ideal: 1080 },
-                            frameRate: { ideal: 60, max: 60 }
+                            width: { ideal: 1280, max: 1920 },
+                            height: { ideal: 720, max: 1080 },
+                            frameRate: { ideal: 30, max: 60 }
                         }
                     };
                     
@@ -418,11 +418,18 @@
                     btn.textContent = 'Stop Recording';
                     btn.classList.add('recording');
                     this.recordedFrames = [];
+                    // Only record when tracking is active
+                    if (!this.trackingActive) {
+                        this.showError('Start tracking first, then record. Recording will capture the shot.');
+                    }
                 } else {
                     btn.textContent = 'Record';
                     btn.classList.remove('recording');
                     if (this.recordedFrames.length > 0) {
                         document.getElementById('replayBtn').disabled = false;
+                        console.log(`Recorded ${this.recordedFrames.length} frames`);
+                    } else {
+                        this.showError('No frames recorded. Make sure tracking is active when recording.');
                     }
                 }
             }
@@ -452,12 +459,16 @@
                 tempCtx.drawImage(this.video, 0, 0, width, height);
                 const currentFrame = tempCtx.getImageData(0, 0, width, height);
                 
-                // Detect ball (throttled)
+                // Detect ball (throttled for performance - ~30fps detection)
                 const now = Date.now();
                 let ball = null;
                 if (now - this.lastDetectionTime > 33) {
                     ball = this.detectBall(currentFrame);
                     this.lastDetectionTime = now;
+                } else if (this.trackingActive && this.ballPositions.length > 0) {
+                    // Use last known position for smooth rendering between detections
+                    const lastPos = this.ballPositions[this.ballPositions.length - 1];
+                    ball = { x: width - lastPos.x, y: lastPos.y, size: lastPos.size || 15 };
                 }
                 
                 // Reactive tracking logic
@@ -511,8 +522,8 @@
                                 
                                 this.calculateStats();
                                 
-                                // Record if recording
-                                if (this.isRecording) {
+                                // Record if recording (only record every 2 frames for efficiency)
+                                if (this.isRecording && this.trackingActive && this.frameCount % 2 === 0) {
                                     const nonMirroredTrail = this.trail.map(p => ({
                                         x: width - p.x,
                                         y: p.y,
@@ -521,7 +532,7 @@
                                     
                                     this.recordedFrames.push({
                                         ball: { x: ball.x, y: ball.y },
-                                        trail: nonMirroredTrail,
+                                        trail: [...nonMirroredTrail], // Copy array
                                         stats: { ...this.stats },
                                         timestamp: Date.now()
                                     });
@@ -783,19 +794,39 @@
                 const width = this.canvas.width;
                 const height = this.canvas.height;
                 
+                // Get the last recorded frame for final stats
+                const lastFrame = this.recordedFrames[this.recordedFrames.length - 1];
+                if (lastFrame && lastFrame.stats) {
+                    document.getElementById('speed').textContent = lastFrame.stats.speed || 0;
+                    document.getElementById('distance').textContent = lastFrame.stats.distance || 0;
+                    document.getElementById('height').textContent = lastFrame.stats.height || 0;
+                    document.getElementById('direction').textContent = lastFrame.stats.direction || 0;
+                    document.getElementById('stats').classList.add('show');
+                }
+                
                 const playFrame = () => {
                     if (!this.isReplaying) return;
                     
                     if (frameIndex >= this.recordedFrames.length) {
+                        // Loop back to start
                         frameIndex = 0;
                     }
                     
                     const frame = this.recordedFrames[frameIndex];
                     
-                    // Draw live video (non-mirrored for replay)
-                    this.ctx.drawImage(this.video, 0, 0, width, height);
+                    // Clear canvas
+                    this.ctx.clearRect(0, 0, width, height);
                     
-                    // Draw trail
+                    // Draw live video background (non-mirrored for replay)
+                    if (this.video.readyState === this.video.HAVE_ENOUGH_DATA) {
+                        this.ctx.drawImage(this.video, 0, 0, width, height);
+                    } else {
+                        // If video not available, use black background
+                        this.ctx.fillStyle = '#000';
+                        this.ctx.fillRect(0, 0, width, height);
+                    }
+                    
+                    // Draw trail up to current frame index
                     if (frame.trail && frame.trail.length >= 2) {
                         const gradient = this.ctx.createLinearGradient(0, 0, width, height);
                         gradient.addColorStop(0, '#ff6b6b');
@@ -826,7 +857,7 @@
                         this.ctx.shadowBlur = 0;
                     }
                     
-                    // Draw ball
+                    // Draw ball at current position
                     if (frame.ball) {
                         this.ctx.fillStyle = '#fff';
                         this.ctx.shadowBlur = 15;
@@ -837,17 +868,8 @@
                         this.ctx.shadowBlur = 0;
                     }
                     
-                    // Update stats
-                    if (frame.stats) {
-                        document.getElementById('speed').textContent = frame.stats.speed || 0;
-                        document.getElementById('distance').textContent = frame.stats.distance || 0;
-                        document.getElementById('height').textContent = frame.stats.height || 0;
-                        document.getElementById('direction').textContent = frame.stats.direction || 0;
-                        document.getElementById('stats').classList.add('show');
-                    }
-                    
                     frameIndex++;
-                    this.replayInterval = setTimeout(playFrame, 50);
+                    this.replayInterval = setTimeout(playFrame, 40); // ~25fps replay for smooth playback
                 };
                 
                 playFrame();
