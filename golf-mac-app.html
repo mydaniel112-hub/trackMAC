@@ -189,6 +189,33 @@
         #error.show {
             display: block;
         }
+
+        #readyIndicator {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            z-index: 15;
+            background: rgba(0, 255, 0, 0.2);
+            border: 3px solid #00ff00;
+            border-radius: 15px;
+            padding: 20px 40px;
+            backdrop-filter: blur(10px);
+            display: none;
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        #readyIndicator.show {
+            display: block;
+            animation: readyPulse 2s infinite;
+        }
+
+        @keyframes readyPulse {
+            0%, 100% { opacity: 0.8; transform: translate(-50%, -50%) scale(1); }
+            50% { opacity: 1; transform: translate(-50%, -50%) scale(1.05); }
+        }
     </style>
 </head>
 <body>
@@ -208,6 +235,10 @@
 
         <div id="status" class="hidden">
             <p>Initializing camera...</p>
+        </div>
+
+        <div id="readyIndicator">
+            <p>✓ Ball Detected - Ready to Hit</p>
         </div>
 
         <div id="error"></div>
@@ -247,10 +278,19 @@
                 this.animationFrame = null;
                 
                 // Ball detection parameters
-                this.minBallSize = 8;
-                this.maxBallSize = 40;
-                this.brightnessThreshold = 180;
-                this.scanStep = 8; // Optimize: scan every 8 pixels instead of 4
+                this.minBallSize = 10;
+                this.maxBallSize = 35;
+                this.brightnessThreshold = 200; // Higher threshold to reduce false positives
+                this.scanStep = 10; // Larger step for better performance
+                
+                // Tracking states
+                this.ballDetected = false;
+                this.ballOnTee = false;
+                this.trackingActive = false; // Only true after ball starts moving
+                this.initialBallPosition = null;
+                this.motionThreshold = 30; // Pixels ball must move before tracking starts
+                this.stableFrames = 0; // Frames ball has been stable
+                this.stableThreshold = 10; // Frames needed to confirm ball on tee
                 
                 // Tracking data
                 this.ballPositions = [];
@@ -353,10 +393,18 @@
                     this.trail = [];
                     this.frameCount = 0;
                     this.lastDetectionTime = 0;
+                    this.ballDetected = false;
+                    this.ballOnTee = false;
+                    this.trackingActive = false;
+                    this.initialBallPosition = null;
+                    this.stableFrames = 0;
+                    document.getElementById('readyIndicator').classList.remove('show');
                     this.track();
                 } else {
                     btn.textContent = 'Start Tracking';
                     btn.classList.remove('tracking');
+                    this.trackingActive = false;
+                    document.getElementById('readyIndicator').classList.remove('show');
                     if (this.animationFrame) {
                         cancelAnimationFrame(this.animationFrame);
                         this.animationFrame = null;
@@ -409,53 +457,123 @@
                 // Detect ball (throttle detection for performance)
                 const now = Date.now();
                 let ball = null;
-                if (now - this.lastDetectionTime > 16) { // ~60fps detection
+                if (now - this.lastDetectionTime > 33) { // ~30fps detection for better accuracy
                     ball = this.detectBall(currentFrame);
                     this.lastDetectionTime = now;
-                } else if (this.ballPositions.length > 0) {
-                    // Use last known position for smooth rendering
-                    const lastPos = this.ballPositions[this.ballPositions.length - 1];
-                    ball = { x: lastPos.x, y: lastPos.y, size: lastPos.size || 15 };
                 }
                 
                 if (ball) {
                     // Mirror X coordinate for display
                     const mirroredX = width - ball.x;
+                    const currentPos = { x: mirroredX, y: ball.y };
                     
-                    this.ballPositions.push({
-                        x: mirroredX,
-                        y: ball.y,
-                        size: ball.size,
-                        time: Date.now() - (this.startTime || Date.now())
-                    });
-                    
-                    // Update trail
-                    this.trail.push({ x: mirroredX, y: ball.y, time: Date.now() });
-                    
-                    // Keep trail limited
-                    if (this.trail.length > 80) {
-                        this.trail.shift();
+                    // Check if ball is stable (on tee) or moving (hit)
+                    if (!this.initialBallPosition) {
+                        // First detection - set initial position
+                        this.initialBallPosition = currentPos;
+                        this.stableFrames = 1;
+                        this.ballDetected = true;
+                    } else {
+                        // Check distance from initial position
+                        const distance = Math.sqrt(
+                            Math.pow(currentPos.x - this.initialBallPosition.x, 2) +
+                            Math.pow(currentPos.y - this.initialBallPosition.y, 2)
+                        );
+                        
+                        if (distance < 15) {
+                            // Ball is still near initial position (on tee)
+                            this.stableFrames++;
+                            if (this.stableFrames >= this.stableThreshold) {
+                                this.ballOnTee = true;
+                                this.trackingActive = false;
+                                document.getElementById('readyIndicator').classList.add('show');
+                            }
+                        } else {
+                            // Ball has moved significantly (hit!)
+                            if (!this.trackingActive && this.ballOnTee) {
+                                // Just started moving - begin tracking
+                                this.trackingActive = true;
+                                this.ballPositions = [];
+                                this.trail = [];
+                                this.startTime = Date.now();
+                                document.getElementById('readyIndicator').classList.remove('show');
+                            }
+                            
+                            if (this.trackingActive) {
+                                // Update initial position for motion tracking
+                                this.initialBallPosition = currentPos;
+                                
+                                // Add to tracking
+                                this.ballPositions.push({
+                                    x: mirroredX,
+                                    y: ball.y,
+                                    size: ball.size,
+                                    time: Date.now() - (this.startTime || Date.now())
+                                });
+                                
+                                // Update trail
+                                this.trail.push({ x: mirroredX, y: ball.y, time: Date.now() });
+                                
+                                // Keep trail limited
+                                if (this.trail.length > 100) {
+                                    this.trail.shift();
+                                }
+                                
+                                // Calculate stats
+                                this.calculateStats();
+                                
+                                // Record frame if recording (store non-mirrored for replay)
+                                if (this.isRecording) {
+                                    // Create non-mirrored video frame for recording
+                                    const recordCanvas = document.createElement('canvas');
+                                    recordCanvas.width = width;
+                                    recordCanvas.height = height;
+                                    const recordCtx = recordCanvas.getContext('2d');
+                                    recordCtx.drawImage(this.video, 0, 0, width, height);
+                                    const nonMirroredFrame = recordCtx.getImageData(0, 0, width, height);
+                                    
+                                    // Store non-mirrored coordinates - un-mirror the trail
+                                    const nonMirroredTrail = this.trail.map(point => ({
+                                        x: width - point.x, // Un-mirror X coordinate
+                                        y: point.y,
+                                        time: point.time
+                                    }));
+                                    
+                                    // Store non-mirrored ball position
+                                    const nonMirroredBall = {
+                                        x: ball.x, // Already non-mirrored from detection
+                                        y: ball.y
+                                    };
+                                    
+                                    this.recordedFrames.push({
+                                        ball: nonMirroredBall,
+                                        trail: nonMirroredTrail,
+                                        stats: { ...this.stats },
+                                        frame: nonMirroredFrame, // Store non-mirrored frame
+                                        timestamp: Date.now()
+                                    });
+                                }
+                            }
+                        }
                     }
-                    
-                    // Calculate stats
-                    this.calculateStats();
-                    
-                    // Record frame if recording
-                    if (this.isRecording) {
-                        this.recordedFrames.push({
-                            ball: { x: mirroredX, y: ball.y },
-                            trail: [...this.trail],
-                            stats: { ...this.stats },
-                            timestamp: Date.now()
-                        });
+                } else {
+                    // No ball detected
+                    this.ballDetected = false;
+                    this.stableFrames = 0;
+                    if (!this.trackingActive) {
+                        this.ballOnTee = false;
+                        this.initialBallPosition = null;
+                        document.getElementById('readyIndicator').classList.remove('show');
                     }
                 }
                 
-                // Draw trail
-                this.drawTrail();
+                // Only draw trail and ball if actively tracking
+                if (this.trackingActive && this.trail.length > 0) {
+                    this.drawTrail();
+                }
                 
-                // Draw current ball position
-                if (ball) {
+                // Draw ball position only if tracking or ready
+                if (ball && (this.trackingActive || this.ballOnTee)) {
                     const mirroredX = width - ball.x;
                     this.drawBall({ x: mirroredX, y: ball.y, size: ball.size });
                 }
@@ -469,15 +587,18 @@
                 const width = frameData.width;
                 const height = frameData.height;
                 
-                // Optimized brightness-based detection
-                const candidates = [];
-                const searchRadius = Math.min(width, height) * 0.1; // Focus on center area
-                const centerX = width / 2;
-                const centerY = height / 2;
+                // Focus search area - lower 2/3 of screen (where tee would be)
+                const searchStartY = height * 0.33;
+                const searchEndY = height;
+                const searchWidth = width * 0.8; // Center 80% of width
+                const searchStartX = width * 0.1;
+                const searchEndX = width * 0.9;
                 
-                // Scan with larger step for performance
-                for (let y = Math.max(0, centerY - searchRadius); y < Math.min(height, centerY + searchRadius); y += this.scanStep) {
-                    for (let x = Math.max(0, centerX - searchRadius); x < Math.min(width, centerX + searchRadius); x += this.scanStep) {
+                const candidates = [];
+                
+                // Scan with larger step for performance and accuracy
+                for (let y = searchStartY; y < searchEndY; y += this.scanStep) {
+                    for (let x = searchStartX; x < searchEndX; x += this.scanStep) {
                         const idx = (y * width + x) * 4;
                         const r = data[idx];
                         const g = data[idx + 1];
@@ -485,13 +606,15 @@
                         
                         const brightness = (r + g + b) / 3;
                         
-                        if (brightness > this.brightnessThreshold) {
-                            // Quick size check
+                        // Higher threshold to reduce false positives
+                        if (brightness > this.brightnessThreshold && r > 180 && g > 180 && b > 180) {
+                            // Check if this is a circular bright spot (ball-like)
                             let size = 0;
                             let totalBrightness = 0;
                             let count = 0;
+                            let circularity = 0;
                             
-                            const checkRadius = Math.min(this.maxBallSize, 20);
+                            const checkRadius = Math.min(this.maxBallSize, 18);
                             for (let dy = -checkRadius; dy <= checkRadius; dy += 2) {
                                 for (let dx = -checkRadius; dx <= checkRadius; dx += 2) {
                                     const dist = Math.sqrt(dx * dx + dy * dy);
@@ -511,16 +634,28 @@
                                             size++;
                                             totalBrightness += nBrightness;
                                             count++;
+                                            // Check circularity - prefer round shapes
+                                            if (dist < checkRadius * 0.7) {
+                                                circularity++;
+                                            }
                                         }
                                     }
                                 }
                             }
                             
-                            if (size >= this.minBallSize && size <= this.maxBallSize) {
+                            // More strict size and circularity requirements
+                            const avgBrightness = totalBrightness / count;
+                            const circularityRatio = circularity / size;
+                            
+                            if (size >= this.minBallSize && 
+                                size <= this.maxBallSize && 
+                                avgBrightness > this.brightnessThreshold &&
+                                circularityRatio > 0.4) { // Must be somewhat circular
                                 candidates.push({
                                     x, y,
                                     size,
-                                    brightness: totalBrightness / count
+                                    brightness: avgBrightness,
+                                    circularity: circularityRatio
                                 });
                             }
                         }
@@ -529,20 +664,22 @@
                 
                 if (candidates.length === 0) return null;
                 
-                // Motion tracking - prefer candidates near last position
-                if (this.ballPositions.length > 0) {
-                    const lastPos = this.ballPositions[this.ballPositions.length - 1];
-                    const lastX = width - lastPos.x; // Un-mirror for comparison
+                // If we have a previous position, prefer candidates near it
+                if (this.initialBallPosition) {
+                    const lastX = width - this.initialBallPosition.x;
                     let bestCandidate = null;
                     let minDistance = Infinity;
                     
                     for (const candidate of candidates) {
                         const distance = Math.sqrt(
                             Math.pow(candidate.x - lastX, 2) +
-                            Math.pow(candidate.y - lastPos.y, 2)
+                            Math.pow(candidate.y - this.initialBallPosition.y, 2)
                         );
                         
-                        if (distance < minDistance && distance < 150) {
+                        // Allow larger search radius if tracking is active
+                        const maxDistance = this.trackingActive ? 200 : 100;
+                        
+                        if (distance < minDistance && distance < maxDistance) {
                             minDistance = distance;
                             bestCandidate = candidate;
                         }
@@ -551,8 +688,13 @@
                     if (bestCandidate) return bestCandidate;
                 }
                 
-                // Return brightest candidate
-                candidates.sort((a, b) => b.brightness - a.brightness);
+                // Return best candidate (brightest and most circular)
+                candidates.sort((a, b) => {
+                    const scoreA = a.brightness * a.circularity;
+                    const scoreB = b.brightness * b.circularity;
+                    return scoreB - scoreA;
+                });
+                
                 return candidates[0];
             }
             
@@ -691,14 +833,15 @@
                     
                     const frame = this.recordedFrames[frameIndex];
                     
-                    // Draw video frame (mirrored)
-                    this.ctx.save();
-                    this.ctx.translate(width, 0);
-                    this.ctx.scale(-1, 1);
-                    this.ctx.drawImage(this.video, 0, 0, width, height);
-                    this.ctx.restore();
+                    // Draw video frame (non-mirrored for replay - matches camera movement)
+                    if (frame.frame) {
+                        this.ctx.putImageData(frame.frame, 0, 0);
+                    } else {
+                        // Fallback: draw non-mirrored video
+                        this.ctx.drawImage(this.video, 0, 0, width, height);
+                    }
                     
-                    // Draw trail
+                    // Draw trail (coordinates are already non-mirrored from recording)
                     if (frame.trail && frame.trail.length >= 2) {
                         const gradient = this.ctx.createLinearGradient(0, 0, width, height);
                         gradient.addColorStop(0, '#ff6b6b');
@@ -722,9 +865,15 @@
                         }
                         
                         this.ctx.stroke();
+                        
+                        // Draw glow effect
+                        this.ctx.shadowBlur = 20;
+                        this.ctx.shadowColor = '#3498db';
+                        this.ctx.stroke();
+                        this.ctx.shadowBlur = 0;
                     }
                     
-                    // Draw ball
+                    // Draw ball (coordinates are already non-mirrored from recording)
                     if (frame.ball) {
                         this.ctx.fillStyle = '#fff';
                         this.ctx.shadowBlur = 15;
@@ -765,6 +914,11 @@
                 this.trail = [];
                 this.recordedFrames = [];
                 this.stats = { speed: 0, distance: 0, height: 0, direction: 0 };
+                this.ballDetected = false;
+                this.ballOnTee = false;
+                this.trackingActive = false;
+                this.initialBallPosition = null;
+                this.stableFrames = 0;
                 
                 document.getElementById('speed').textContent = '0';
                 document.getElementById('distance').textContent = '0';
@@ -772,6 +926,7 @@
                 document.getElementById('direction').textContent = '0';
                 
                 document.getElementById('stats').classList.remove('show');
+                document.getElementById('readyIndicator').classList.remove('show');
                 document.getElementById('replayBtn').disabled = true;
                 document.getElementById('replayBtn').textContent = 'Replay';
                 
